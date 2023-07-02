@@ -13,7 +13,7 @@ app = FastAPI(
     title="Youtube to article API",
     description="Automatic creation of a text publication based on a youtube video.",
     contact={"name": "Крафтовый код",
-             "url": "https://github.com/Hacaton"},
+             "url": "https://github.com/LatikDesu/youtube_to_text.git"},
     version="0.1.0",
     docs_url="/documentation",
     redoc_url=None
