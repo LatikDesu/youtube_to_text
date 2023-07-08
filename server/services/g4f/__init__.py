@@ -6,8 +6,9 @@ from . import Provider
 
 class ChatCompletion:
     @staticmethod
-    def create(model: Model.model or str, messages: list, provider: Provider.Provider = None, stream: bool = False,
-               auth: str = False, **kwargs):
+    async def create(model: Model.model or str, messages: list, provider: Provider.Provider = None,
+                     stream: bool = False,
+                     auth: str = False, **kwargs):
         kwargs['auth'] = auth
 
         if provider and provider.needs_auth and not auth:

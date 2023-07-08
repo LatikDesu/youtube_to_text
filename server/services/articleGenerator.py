@@ -7,7 +7,8 @@ from aiohttp import ClientSession
 from youtube_transcript_api import _errors as youtube_transcript_errors
 
 from server.logger import get_logger
-from server.schemas import ArticleRequest, Article, TranscriptPart
+from server.schemas import ArticleRequest, Article, TranscriptPart, ArticleTopic
+from server.services.gpt_requests import gpt_json_request
 from server.services.transcript.fromWhisper import WhisperTranscriptProvider
 from server.services.transcript.fromYoutube import YouTubeTranscriptProvider
 
@@ -97,12 +98,15 @@ class ArticleGenerator:
             self,
             transcript_parts: Sequence[TranscriptPart],
     ) -> None:
-        """Генерирует тему и время для каждой темы"""
+        """Генерирует заголовок и время для каждой темы"""
         start_time = time.monotonic()
         number_of_paragraphs = self.request.number_of_paragraphs
         subtitles = _format_transcript(transcript_parts)
-        article_dict = await gpt_json_request(PROMPT, '\n'.join(subtitles), self.session)
-        # topics = [ArticleTopic(**topic_data) for topic_data in article_dict['topics']]
+        article_dict = await gpt_json_request('\n'.join(subtitles), self.session)
+        logger.info('Complete theme and topics ...')
+
+        topics = [ArticleTopic(**topic_data) for topic_data in article_dict['topics']]
+        print(topics)
         # if number_of_paragraphs < len(topics):
         #     number_of_seconds = transcript_entries[-1].start - transcript_entries[0].start
         #     approximate_topic_length = number_of_seconds / number_of_paragraphs
