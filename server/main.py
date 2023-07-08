@@ -7,8 +7,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from server.dependencies import http_client
 from server.logger import LogConfig
 from server.routers import api
+from server.services.transcript.pytube_fix import fix
 
 dictConfig(LogConfig().dict())
+fix()
 
 
 @asynccontextmanager

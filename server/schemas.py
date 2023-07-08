@@ -62,6 +62,7 @@ class GenerationTime(BaseModel):
 
 class Article(BaseModel):
     """Готовая статья"""
+    video_id: str
     title: str
     description: str
     topics: list[ArticleTopic]
