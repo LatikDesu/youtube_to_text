@@ -3,17 +3,17 @@ import json
 
 from pytube import YouTube
 
-from server.schemas import TranscriptEntry
+from server.schemas import TranscriptPart
 from server.services.transcript.transcript_provider_abc import TranscriptProvider
 
 
 class WhisperTranscriptProvider(TranscriptProvider):
     """Получает расшифровку используя модель Whisper"""
 
-    async def get_transcript(self) -> list[TranscriptEntry]:
+    async def get_transcript(self) -> list[TranscriptPart]:
         buffer = self._get_audio_buffer()
         whisper_response = await self._whisper_request(buffer.read())
-        return [TranscriptEntry(
+        return [TranscriptPart(
             segment['text'],
             segment['start'],
             segment['end'] - segment['start'],

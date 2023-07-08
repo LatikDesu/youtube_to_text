@@ -9,7 +9,7 @@ _TIME_REGEX = r'^\d{1,2}:\d{1,2}:\d{1,2}$'
 
 
 @dataclass
-class TranscriptEntry:
+class TranscriptPart:
     """Фрагмент расшифровки"""
     text: str
     start: float
@@ -43,7 +43,7 @@ class ArticleRequest(BaseModel):
 
 
 class ArticleTopic(BaseModel):
-    """Одна из тем статьи. Статья может иметь произвольное количество тем"""
+    """Одна из тем статьи"""
     start: str = Field(regex=_TIME_REGEX)
     end: str = Field(regex=_TIME_REGEX)
     title: Optional[str] = None

@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import abstractmethod, ABC
 from typing import TYPE_CHECKING
 
-from server.schemas import TranscriptEntry
+from server.schemas import TranscriptPart
 
 if TYPE_CHECKING:
     from aiohttp import ClientSession
@@ -21,5 +21,5 @@ class TranscriptProvider(ABC):
         self.session = session
 
     @abstractmethod
-    async def get_transcript(self) -> list[TranscriptEntry]:
+    async def get_transcript(self) -> list[TranscriptPart]:
         raise NotImplementedError
