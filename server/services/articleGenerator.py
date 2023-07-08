@@ -1,19 +1,19 @@
 import time
 from datetime import timedelta
-from typing import Sequence, Iterable
+from typing import Sequence, Iterable, TYPE_CHECKING
 
 import pytube
 from aiohttp import ClientSession
 from youtube_transcript_api import _errors as youtube_transcript_errors
 
 from server.logger import get_logger
-from server.schemas import ArticleRequest, Article, TranscriptPart, ArticleTopic
+from server.schemas import ArticleRequest, Article, TranscriptPart, ArticleTopic, GenerationTime
 from server.services.gpt_requests import gpt_json_request
 from server.services.transcript.fromWhisper import WhisperTranscriptProvider
 from server.services.transcript.fromYoutube import YouTubeTranscriptProvider
 
-# if TYPE_CHECKING:
-#     from aiohttp import ClientSession
+if TYPE_CHECKING:
+    from aiohttp import ClientSession
 
 logger = get_logger()
 
@@ -49,7 +49,10 @@ class ArticleGenerator:
 
         logger.info('Start generating article title and themes for %s', url)
         await self._generate_partial_article(transcript)
-        # article = self._article
+
+        article = self._article
+        article.generation_time.transcript = transcript_generation_time
+        return article
 
     #
     #         screenshot_periods = [
@@ -100,26 +103,27 @@ class ArticleGenerator:
     ) -> None:
         """Генерирует заголовок и время для каждой темы"""
         start_time = time.monotonic()
-        number_of_paragraphs = self.request.number_of_paragraphs
         subtitles = _format_transcript(transcript_parts)
         article_dict = await gpt_json_request('\n'.join(subtitles), self.session)
         logger.info('Complete theme and topics ...')
 
+        number_of_paragraphs = self.request.number_of_paragraphs
         topics = [ArticleTopic(**topic_data) for topic_data in article_dict['topics']]
-        print(topics)
-        # if number_of_paragraphs < len(topics):
-        #     number_of_seconds = transcript_entries[-1].start - transcript_entries[0].start
-        #     approximate_topic_length = number_of_seconds / number_of_paragraphs
-        #     topics = _recombine_topics(approximate_topic_length, topics)
-        # if number_of_paragraphs != len(topics):
-        #     logger.warning('Number of topics is not equal to the requested')
-        #
-        # self._article = Article(
-        #     title=article_dict['title'],
-        #     description=article_dict['description'],
-        #     topics=topics,
-        #     generation_time=GenerationTime(title=time.monotonic() - start_time),
-        # )
+        if number_of_paragraphs < len(topics):
+            number_of_seconds = transcript_parts[-1].start - transcript_parts[0].start
+            approximate_topic_length = number_of_seconds / number_of_paragraphs
+            topics = _recombine_topics(approximate_topic_length, topics)
+        if number_of_paragraphs != len(topics):
+            logger.warning('Number of topics is not equal to the requested')
+        logger.info('Complete topics count ...')
+
+        self._article = Article(
+            video_id=pytube.YouTube(self.request.url).video_id,
+            title=article_dict['title'],
+            description=article_dict['description'],
+            topics=topics,
+            generation_time=GenerationTime(title=time.monotonic() - start_time),
+        )
 
         #
         # async def _generate_article_content(
@@ -135,7 +139,6 @@ class ArticleGenerator:
         #             transcript_entries, topic
         #         ) for topic in topics
         #     ]
-        #     # TODO remove this hack, to do this, rewrite first prompt
         #     if all((
         #             transcript_entries[-1] not in transcript_entries_for_topics[-1],
         #             transcript_entries_for_topics[-1],
@@ -171,38 +174,7 @@ class ArticleGenerator:
 
     #
     #
-    # def _recombine_topics(
-    #         approximate_topic_length: float,
-    #         old_topics: list[ArticleTopic]
-    # ) -> list[ArticleTopic]:
-    #     """
-    #     Соединяет несколько подтем в одну для достижения указанного количества
-    #     В теории качество сгенерированных тем не должно пострадать, ведь они будут компиляцией цельных,
-    #     пусть и, возможно, независимых тем
-    #     """
-    #     last_topic_end = get_sec(old_topics[-1].end)
-    #     topics = []
-    #     topic_start_time = old_topics[0].start
-    #     topic_start_second = get_sec(topic_start_time)
-    #     for old_topic in old_topics:
-    #         end_time = get_sec(old_topic.end)
-    #         if (
-    #                 end_time - topic_start_second > approximate_topic_length and
-    #                 last_topic_end - topic_start_second > approximate_topic_length
-    #         ):
-    #             topics.append(ArticleTopic(
-    #                 start=topic_start_time,
-    #                 end=old_topic.end,
-    #             ))
-    #             topic_start_time = old_topic.end
-    #             topic_start_second = end_time
-    #     if end_time != topic_start_second:  # type: ignore
-    #         topics.append(ArticleTopic(
-    #             start=topic_start_time,
-    #             end=old_topic.end,  # type: ignore
-    #         ))
-    #
-    #     return topics
+
     #
     #
     # def _select_transcript_entries_for_topic(
@@ -237,3 +209,40 @@ def _format_transcript(transcript_parts: Iterable[TranscriptPart]) -> list[str]:
         text = entry.text
         result.append(f'{timedelta(seconds=int(start))} - {text}')
     return result
+
+
+def _recombine_topics(
+        approximate_topic_length: float,
+        old_topics: list[ArticleTopic]
+) -> list[ArticleTopic]:
+    """
+    Соединяет несколько подтем в одну
+    """
+    last_topic_end = get_sec(old_topics[-1].end)
+    topics = []
+    topic_start_time = old_topics[0].start
+    topic_start_second = get_sec(topic_start_time)
+    for old_topic in old_topics:
+        end_time = get_sec(old_topic.end)
+        if (
+                end_time - topic_start_second > approximate_topic_length and
+                last_topic_end - topic_start_second > approximate_topic_length
+        ):
+            topics.append(ArticleTopic(
+                start=topic_start_time,
+                end=old_topic.end,
+            ))
+            topic_start_time = old_topic.end
+            topic_start_second = end_time
+    if end_time != topic_start_second:
+        topics.append(ArticleTopic(
+            start=topic_start_time,
+            end=old_topic.end,
+        ))
+
+    return topics
+
+
+def get_sec(time_str: str) -> int:
+    h, m, s = time_str.split(':')
+    return int(h) * 3600 + int(m) * 60 + int(s)
