@@ -1,3 +1,4 @@
+import asyncio
 import time
 from datetime import timedelta
 from typing import Sequence, Iterable, TYPE_CHECKING
@@ -8,7 +9,7 @@ from youtube_transcript_api import _errors as youtube_transcript_errors
 
 from server.logger import get_logger
 from server.schemas import ArticleRequest, Article, TranscriptPart, ArticleTopic, GenerationTime
-from server.services.gpt_requests import gpt_json_request
+from server.services.gpt_requests import gpt_request
 from server.services.transcript.fromWhisper import WhisperTranscriptProvider
 from server.services.transcript.fromYoutube import YouTubeTranscriptProvider
 
@@ -52,6 +53,9 @@ class ArticleGenerator:
 
         article = self._article
         article.generation_time.transcript = transcript_generation_time
+
+        await self._generate_article_content(transcript)
+
         return article
 
     #
@@ -104,10 +108,14 @@ class ArticleGenerator:
         """Генерирует заголовок и время для каждой темы"""
         start_time = time.monotonic()
         subtitles = _format_transcript(transcript_parts)
-        article_dict = await gpt_json_request('\n'.join(subtitles), self.session)
+        article_dict = await gpt_request('title', '\n'.join(subtitles), self.session)
         logger.info('Complete theme and topics ...')
 
-        number_of_paragraphs = self.request.number_of_paragraphs
+        if self.request.number_of_paragraphs == 3:
+            number_of_paragraphs = (transcript_parts[-1].start - transcript_parts[0].start) / 300
+        else:
+            number_of_paragraphs = self.request.number_of_paragraphs
+
         topics = [ArticleTopic(**topic_data) for topic_data in article_dict['topics']]
         if number_of_paragraphs < len(topics):
             number_of_seconds = transcript_parts[-1].start - transcript_parts[0].start
@@ -125,71 +133,45 @@ class ArticleGenerator:
             generation_time=GenerationTime(title=time.monotonic() - start_time),
         )
 
-        #
-        # async def _generate_article_content(
-        #         self,
-        #         transcript_entries: Sequence[TranscriptEntry],
-        # ) -> None:
-        #     """Генерирует контент и зоголовок для каждой темы"""
-        #     start_time = time.monotonic()
-        #     topics = self._article.topics
-        #
-        #     transcript_entries_for_topics = [
-        #         _select_transcript_entries_for_topic(
-        #             transcript_entries, topic
-        #         ) for topic in topics
-        #     ]
-        #     if all((
-        #             transcript_entries[-1] not in transcript_entries_for_topics[-1],
-        #             transcript_entries_for_topics[-1],
-        #     )):
-        #         transcript_entries_for_topics[-1].append(transcript_entries[-1])
-        #
-        #     logger.debug(
-        #         'Lenght of transcript: %d before splitting, %d after',
-        #         len(transcript_entries),
-        #         sum(len(entry) for entry in transcript_entries_for_topics)
-        #     )
-        #
-        #     topic_datas = await asyncio.gather(*[
-        #         gpt_request(
-        #             TOPIC_PROMPT, '\n'.join(_format_transcript(transcript_entries)), self.session
-        #         ) for transcript_entries in transcript_entries_for_topics if transcript_entries
-        #     ])
-        #     for data, filtered_topics in zip(topic_datas, topics):
-        #         title, *paragraphs = data.splitlines()
-        #         if not paragraphs:
-        #             filtered_topics.title = 'Не удалось сгенерировать'
-        #             filtered_topics.paragraphs = title
-        #         else:
-        #             filtered_topics.title = title
-        #             filtered_topics.paragraphs = '\n'.join(paragraphs)
-        #     filtered_topics = list(filter(lambda topic: topic.paragraphs, topics))
-        #     if len(filtered_topics) != len(topics):
-        #         logger.warning(
-        #             'Some topics has no paragraphs so was removed. This means that the model '
-        #             'gave the wrong answer, the quality of the article may suffer.'
-        #         )
-        #     self._article.generation_time.content = time.monotonic() - start_time
+    async def _generate_article_content(
+            self,
+            transcript_parts: Sequence[TranscriptPart],
+    ) -> None:
+        """Генерирует контент и заголовок для каждой темы"""
+        start_time = time.monotonic()
+        topics = self._article.topics
 
-    #
-    #
+        transcript_parts_for_topics = [
+            _select_transcript_entries_for_topic(
+                transcript_parts, topic
+            ) for topic in topics
+        ]
 
-    #
-    #
-    # def _select_transcript_entries_for_topic(
-    #         transcript_entries: Sequence[TranscriptEntry],
-    #         topic: ArticleTopic,
-    # ) -> list[TranscriptEntry]:
-    #     """
-    #     Выбирает субтитры, которые подходят под указанную тему исходя из времени.
-    #     Это необходимо, ведь отправка всех субтитров может привести к нехватке токенов у языковой модели
-    #     """
-    #     start = get_sec(topic.start)
-    #     end = get_sec(topic.end)
-    #     return [entry for entry in transcript_entries if start <= entry.start <= end]
-    #
-    #
+        logger.debug(
+            'Lenght of transcript: %d before splitting, %d after',
+            len(transcript_parts),
+            sum(len(entry) for entry in transcript_parts_for_topics)
+        )
+
+        topic_datas = await asyncio.gather(*[
+            gpt_request('topic', '\n'.join(_format_transcript(transcript_parts)), self.session)
+            for transcript_parts in transcript_parts_for_topics if transcript_parts
+        ])
+        for data, filtered_topics in zip(topic_datas, topics):
+            title, *paragraphs = data.splitlines()
+            if not paragraphs:
+                filtered_topics.title = 'Не удалось сгенерировать'
+                filtered_topics.paragraphs = title
+            else:
+                filtered_topics.title = title
+                filtered_topics.paragraphs = '\n'.join(paragraphs)
+        filtered_topics = list(filter(lambda topic: topic.paragraphs, topics))
+        if len(filtered_topics) != len(topics):
+            logger.warning(
+                'Some topics has no paragraphs so was removed. This means that the model '
+                'gave the wrong answer, the quality of the article may suffer.'
+            )
+        self._article.generation_time.content = time.monotonic() - start_time
 
 
 def _truncate_transcript(
@@ -234,11 +216,12 @@ def _recombine_topics(
             ))
             topic_start_time = old_topic.end
             topic_start_second = end_time
-    if end_time != topic_start_second:
-        topics.append(ArticleTopic(
-            start=topic_start_time,
-            end=old_topic.end,
-        ))
+        if end_time != topic_start_second:
+            topics.append(ArticleTopic(
+                start=topic_start_time,
+                end=old_topic.end,
+            )
+            )
 
     return topics
 
@@ -246,3 +229,15 @@ def _recombine_topics(
 def get_sec(time_str: str) -> int:
     h, m, s = time_str.split(':')
     return int(h) * 3600 + int(m) * 60 + int(s)
+
+
+def _select_transcript_entries_for_topic(
+        transcript_parts: Sequence[TranscriptPart],
+        topic: ArticleTopic,
+) -> list[TranscriptPart]:
+    """
+    Выбирает субтитры, которые подходят под указанную тему исходя из времени.
+    """
+    start = get_sec(topic.start)
+    end = get_sec(topic.end)
+    return [entry for entry in transcript_parts if start <= entry.start <= end]
