@@ -3,6 +3,7 @@ import time
 from datetime import timedelta
 from typing import Sequence, Iterable, TYPE_CHECKING
 
+import nltk
 import pytube
 from aiohttp import ClientSession
 from youtube_transcript_api import _errors as youtube_transcript_errors
@@ -12,6 +13,8 @@ from server.schemas import ArticleRequest, Article, TranscriptPart, ArticleTopic
 from server.services.gpt_requests import gpt_request
 from server.services.transcript.fromWhisper import WhisperTranscriptProvider
 from server.services.transcript.fromYoutube import YouTubeTranscriptProvider
+from server.services.transcript.restorePunctuation import restore_punctuation
+from server.services.transcript.utils import preporcess_transcript
 
 if TYPE_CHECKING:
     from aiohttp import ClientSession
@@ -35,27 +38,31 @@ class ArticleGenerator:
 
     async def generate_article(self) -> Article:
         """Выполняет все шаги по генерации статьи и возвращает её"""
+
         start_time = time.monotonic()
         request = self.request
+
         url = pytube.YouTube(request.url).watch_url
 
         logger.info('Starting generating article for %s', url)
         logger.info('Gathering transcript for %s', url)
         transcript_generation_start_time = time.monotonic()
-        transcript = await self._get_transcript()
+        transcript = await self._get_transcript()  # получили список объектов транскрипции вида TranscriptPart(text=..., start=..., duration=...)
         transcript_generation_time = time.monotonic() - transcript_generation_start_time
-        if request.start or request.end:
+        if request.start or request.end:  # если есть начало и конец запроса, то получили список объектов из этого промежутка
             transcript = _truncate_transcript(transcript, request.start, request.end)
         logger.debug('Transcript for %s %s', url, transcript)
+
+        sentences = await self._get_sentences(transcript)
+        logger.debug('Sentences from transcript -->  %s', transcript)
 
         logger.info('Start generating article title and themes for %s', url)
         await self._generate_partial_article(transcript)
 
-        article = self._article
-        article.generation_time.transcript = transcript_generation_time
-
         await self._generate_article_content(transcript)
 
+        article = self._article
+        article.generation_time.transcript = transcript_generation_time
         return article
 
     #
@@ -100,6 +107,25 @@ class ArticleGenerator:
             logger.info('No transcripts for %s, use whisper fallback', url)
             provider = WhisperTranscriptProvider(url, self.session)
             return await provider.get_transcript()
+
+    async def _get_sentences(
+            self,
+            transcript_parts: Sequence[TranscriptPart],
+    ) -> list[TranscriptPart]:
+        """Разделяем субтитры из видео на предложения"""
+        raw_text = ' '.join([part.text for part in transcript_parts]).lower()  # получаем голый текст
+        clear_text = preporcess_transcript(raw_text)  # убираем лишнее из текста
+        del raw_text
+
+        sentences_list = restore_punctuation(clear_text)  # восстанавливаем пунктуацию
+        sentences_str = ' '.join(sentences_list[0])
+        del sentences_list
+
+        sentences = nltk.sent_tokenize(sentences_str)  # разделяем на предложения
+        del sentences_str
+
+        print("ПРЕДЛОЖЕНИЯ", sentences)
+        return sentences
 
     async def _generate_partial_article(
             self,
